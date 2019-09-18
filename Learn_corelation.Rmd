@@ -1,0 +1,159 @@
+#Course 8 - Practical Machine Learning Project
+##Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+##Model selection
+Among different predition with trees, which can perform better prediction than regression analysis for variables with non-linear relationships, random forest can give the highest accuracy with boosting since samples are boostrapped from training data for setting up various trees, and those trees are then voted and averaged.
+
+Though it is the most accurate prediction tree method, the runtime of random forest can be very long. Also, the model can be overfitting the training data. 
+
+Thus, in the analysis, only highly correlated variables are selected for the model construction. To minimize the run time, training control will also be configured. To tackle overfitting issue, the training data will be seperated into training data set and validation data set.
+
+##Data
+Training data and testing data are downloaded from the following 2 websites separately: [1]
+
+1. Training
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+2. Testing
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Download the files for the analysis.
+
+```{r, cache=TRUE}
+if(!file.exists("./train.csv"))
+download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "./train.csv")
+trainRawDf<-read.csv("./train.csv", header=TRUE)
+
+if(!file.exists("./test.csv"))
+download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "./test.csv")
+testRawDf<-read.csv("./test.csv", header=TRUE)
+
+```
+
+##Data Cleaning
+An exploratory data analysis is shown as below.
+
+The dimension of data:
+```{r}
+dim(trainRawDf)
+dim(testRawDf)
+```
+
+For columns with NAs and columns with near zero variance, we remove them as they give little contributions to the models
+```{r}
+library(caret)
+set.seed(1234567)
+
+#Remove Columns with NAs
+trainDf<-trainRawDf[,!colSums(is.na(trainRawDf))>0]
+
+#Remove nzv. Cutoff will be set to 90/10
+trainDf<-trainDf[,-nzv(trainDf, freqCut = 90/10)]
+
+#Dimension of df after removing columns with NAs
+dim(trainDf)
+
+```
+
+Also, we remove the 1st to 7th columns as they are not predictors
+```{r}
+names(trainDf[,1:7])
+trainDf<-trainDf[,-(1:7)]
+
+```
+
+To prevent overfitting when using random forest (mentioned below), we use set 60% in the training test for testing and the remaining 40% for validation.
+
+```{r}
+trainIdx <- createDataPartition(trainDf$classe, p=0.6, list = FALSE)
+trainrfdf <- trainDf[trainIdx,]
+validrfdf <- trainDf[-trainIdx,]
+
+dim(trainrfdf)
+dim(validrfdf)
+
+```
+
+But 52 variables can consume a tremendous time for computing the random forest, so we implement RFE to select highly correlated variables (with classe) for the computation.
+```{r}
+library(corrplot)
+#construct the correlation matrix
+corMatrix<-cor(trainrfdf[,-52])
+#print the correlation matrix. The further the corr. values are from 0, the higher the corr. between the variables.
+corrplot(corMatrix, type = "upper",  order="FPC",tl.cex = 0.5, tl.col = rgb(0, 0, 0))
+
+#find the indexes of the highly correlated variables (cutoff >=0.75 or higher is preferred)
+highlyCorrelated <- findCorrelation(corMatrix, cutoff=0.75)
+#print the variable names
+print(names(trainrfdf[,highlyCorrelated]))
+
+
+```
+
+##Prediction Models - Random Forest
+To enhance the efficiency of the algorithm, we first setup the parallel processing
+
+```{r}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+```
+
+Next, we configure the trainControl object.
+```{r}
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+```
+
+Develop the training model
+```{r}
+rfdf<-cbind(trainrfdf[,highlyCorrelated],classe=trainrfdf$classe)
+rfmdl<-train(classe~., rfdf, method="rf", prox=TRUE, trControl=fitControl)
+
+```
+
+De-register the cluster.
+```{r}
+stopCluster(cluster)
+registerDoSEQ()
+
+```
+
+##Cross Validation and Analysis
+We study the accurancy of the prediction of the random forest model with our validation data.
+
+```{r}
+rfvaldf<-cbind(validrfdf[,highlyCorrelated],classe=validrfdf$classe)
+validPred <- predict(rfmdl,newdata=rfvaldf)
+confusionMatrix(validrfdf$classe, validPred)
+
+```
+
+##Expected out of Sample Error
+From the result showed, the accuracy is 97.6% in our cross validation. Since the test data set is a new one, the out of sample error is assumed to be ranged from 0% to 7%. 
+
+Now, we will apply the rf model on our test set.
+
+```{r}
+var<-names(trainrfdf[,highlyCorrelated])
+idx<-names(testRawDf)%in%var
+testrfdf<-testRawDf[,idx]
+
+testPred <- predict(rfmdl,newdata=testrfdf)
+
+#Test Result
+names(testPred)<-1:20
+testPred
+
+```
+
+
+##Source
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz5yvszBcys
